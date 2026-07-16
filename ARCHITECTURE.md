@@ -46,8 +46,9 @@
 Use when Yjs + y-supabase is unstable in your project, or Realtime policies block the channel:
 
 - Debounced autosave writes `content_json` (includes Lexical `format` bits for bold/italic/underline).
+- Saves use a **coalescing flush loop**: if the user types while a PATCH is in flight, the client keeps dirty and PATCHes again with the latest JSON (avoids “Saved” while the DB still has a 1-character snapshot).
 - Clients **broadcast** content envelopes on a Realtime channel (`soft:doc:{id}`) so format-only edits sync even when `postgres_changes` is not enabled.
-- `postgres_changes` on `documents` remains a backup path.
+- `postgres_changes` on `documents` remains a backup path; echoes of our own saves are ignored via recent local fingerprints.
 - Remote apply uses `shouldApplyRemoteContent` (`lib/sync-content.ts`): newer remote wins unless local unsaved edits are newer — prevents dropping a peer’s bold mark.
 - Presence avatars still use Realtime Presence.
 

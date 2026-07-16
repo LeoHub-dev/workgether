@@ -76,3 +76,40 @@ export function collectTextFormats(contentJson: unknown): number[] {
 export function hasBoldFormat(contentJson: unknown): boolean {
   return collectTextFormats(contentJson).some((f) => (f & 1) === 1);
 }
+
+/**
+ * After a save response returns, only treat the doc as clean if the saved
+ * snapshot still matches what the user has now. If they typed during the
+ * request, we must keep dirty and flush again (avoids "Saved" with 1 char).
+ */
+export function saveCompletionState(options: {
+  /** Monotonic id assigned when this save started */
+  saveId: number;
+  /** Latest save id (increments on every persist kickoff) */
+  latestSaveId: number;
+  savedFingerprint: string;
+  currentFingerprint: string;
+}): { isLatest: boolean; stillDirty: boolean } {
+  const isLatest = options.saveId === options.latestSaveId;
+  if (!isLatest) {
+    return { isLatest: false, stillDirty: true };
+  }
+  return {
+    isLatest: true,
+    stillDirty: options.savedFingerprint !== options.currentFingerprint,
+  };
+}
+
+/** Ignore Realtime echoes of content we ourselves just wrote/broadcast. */
+export function shouldIgnoreRemoteEcho(options: {
+  remoteFingerprint: string;
+  localFingerprint: string;
+  recentLocalFingerprints: Iterable<string>;
+}): boolean {
+  if (!options.remoteFingerprint) return true;
+  if (options.remoteFingerprint === options.localFingerprint) return true;
+  for (const fp of options.recentLocalFingerprints) {
+    if (fp === options.remoteFingerprint) return true;
+  }
+  return false;
+}

@@ -46,7 +46,9 @@ import {
 } from "@/lib/import-content";
 import {
   contentFingerprint,
+  saveCompletionState,
   shouldApplyRemoteContent,
+  shouldIgnoreRemoteEcho,
   toEpochMs,
 } from "@/lib/sync-content";
 
@@ -235,26 +237,53 @@ export function DocumentEditor({
   const localEditAtRef = useRef(0);
   const lastAppliedRemoteAtRef = useRef(toEpochMs(initialDoc.updated_at));
   const lastFingerprintRef = useRef(contentFingerprint(initialDoc.content_json));
+  const recentLocalFingerprints = useRef<string[]>([]);
+  const saveInFlightRef = useRef(false);
+  const latestSaveIdRef = useRef(0);
+  const pendingTitleRef = useRef<string | null>(null);
+
+  const rememberLocalFingerprint = useCallback((fp: string) => {
+    const list = recentLocalFingerprints.current.filter((x) => x !== fp);
+    list.push(fp);
+    recentLocalFingerprints.current = list.slice(-12);
+  }, []);
 
   const queueBroadcast = useCallback((content: unknown, updatedAt?: string) => {
     if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
     broadcastTimer.current = setTimeout(() => {
+      const fp = contentFingerprint(content);
+      rememberLocalFingerprint(fp);
       publishRef.current?.(content, updatedAt);
     }, 120);
-  }, []);
+  }, [rememberLocalFingerprint]);
 
-  const persist = useCallback(
-    async (payload: { title?: string; content_json?: unknown }) => {
-      if (!canEdit) return;
-      setSaveState("saving");
-      setSaveError(null);
-      try {
-        // Broadcast immediately so peers see format (bold/italic) without
-        // waiting for Postgres realtime publication.
-        if (payload.content_json !== undefined) {
-          if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
-          publishRef.current?.(payload.content_json);
-        }
+  /**
+   * Coalescing save loop: always PATCH the latest editor JSON, and if the user
+   * typed while a request was in flight, flush again. Prevents "Saved" while
+   * the DB still holds an older 1-character snapshot.
+   */
+  const flushSave = useCallback(async () => {
+    if (!canEdit || saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
+    setSaveState("saving");
+    setSaveError(null);
+
+    try {
+      // Loop until the persisted snapshot matches the live editor (and title).
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const saveId = ++latestSaveIdRef.current;
+        const contentSnapshot = latestJson.current;
+        const contentFp = contentFingerprint(contentSnapshot);
+        const titleSnapshot = pendingTitleRef.current;
+        const payload: { title?: string; content_json?: unknown } = {
+          content_json: contentSnapshot,
+        };
+        if (titleSnapshot != null) payload.title = titleSnapshot;
+
+        rememberLocalFingerprint(contentFp);
+        if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
+        publishRef.current?.(contentSnapshot);
 
         const res = await fetch(`/api/documents/${initialDoc.id}`, {
           method: "PATCH",
@@ -263,23 +292,53 @@ export function DocumentEditor({
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Save failed");
+
+        const completion = saveCompletionState({
+          saveId,
+          latestSaveId: latestSaveIdRef.current,
+          savedFingerprint: contentFp,
+          currentFingerprint: contentFingerprint(latestJson.current),
+        });
+
         const saved = data.document as DocumentRow | undefined;
-        if (saved?.updated_at) {
+        if (saved?.updated_at && completion.isLatest) {
           lastAppliedRemoteAtRef.current = toEpochMs(saved.updated_at);
-          if (payload.content_json !== undefined) {
-            publishRef.current?.(payload.content_json, saved.updated_at);
-            lastFingerprintRef.current = contentFingerprint(payload.content_json);
-          }
+          publishRef.current?.(contentSnapshot, saved.updated_at);
         }
+
+        if (titleSnapshot != null && pendingTitleRef.current === titleSnapshot) {
+          pendingTitleRef.current = null;
+        }
+
+        if (!completion.isLatest) {
+          // A newer flush was requested; continue loop with fresher snapshots.
+          continue;
+        }
+
+        if (completion.stillDirty || pendingTitleRef.current != null) {
+          // User typed during the request — persist again with latest JSON.
+          continue;
+        }
+
+        lastFingerprintRef.current = contentFp;
         localDirtyRef.current = false;
         setSaveState("saved");
-      } catch (e) {
-        setSaveState("error");
-        setSaveError(e instanceof Error ? e.message : "Save failed");
+        break;
       }
-    },
-    [canEdit, initialDoc.id],
-  );
+    } catch (e) {
+      setSaveState("error");
+      setSaveError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      saveInFlightRef.current = false;
+      // If edits landed after the loop exited on error, schedule another try.
+      if (localDirtyRef.current || pendingTitleRef.current != null) {
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => {
+          void flushSave();
+        }, 400);
+      }
+    }
+  }, [canEdit, initialDoc.id, rememberLocalFingerprint]);
 
   const scheduleContentSave = useCallback(() => {
     if (!canEdit) return;
@@ -291,20 +350,22 @@ export function DocumentEditor({
     queueBroadcast(latestJson.current);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      void persist({ content_json: latestJson.current });
-    }, 800);
-  }, [canEdit, persist, queueBroadcast]);
+      void flushSave();
+    }, 1000);
+  }, [canEdit, flushSave, queueBroadcast]);
 
   const scheduleTitleSave = useCallback(
     (nextTitle: string) => {
       if (!canEdit) return;
+      pendingTitleRef.current = nextTitle;
+      localDirtyRef.current = true;
       setSaveState("dirty");
       if (titleTimer.current) clearTimeout(titleTimer.current);
       titleTimer.current = setTimeout(() => {
-        void persist({ title: nextTitle });
+        void flushSave();
       }, 800);
     },
-    [canEdit, persist],
+    [canEdit, flushSave],
   );
 
   const handleChange = useCallback(
@@ -331,8 +392,10 @@ export function DocumentEditor({
   const manualSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (titleTimer.current) clearTimeout(titleTimer.current);
-    void persist({ title, content_json: latestJson.current });
-  }, [persist, title]);
+    pendingTitleRef.current = title;
+    localDirtyRef.current = true;
+    void flushSave();
+  }, [flushSave, title]);
 
   const providerFactory = useCallback(
     (id: string, yjsDocMap: Map<string, import("yjs").Doc>) =>
@@ -391,12 +454,32 @@ export function DocumentEditor({
       if (!editor) return;
 
       const fingerprint = contentFingerprint(payload.content_json);
+      const localFp = contentFingerprint(latestJson.current);
+
+      // Never apply our own save/broadcast echo — that was wiping longer local
+      // drafts back down to a short in-flight snapshot ("only 1 character saved").
+      if (
+        shouldIgnoreRemoteEcho({
+          remoteFingerprint: fingerprint,
+          localFingerprint: localFp,
+          recentLocalFingerprints: recentLocalFingerprints.current,
+        })
+      ) {
+        if (payload.updated_at) {
+          lastAppliedRemoteAtRef.current = Math.max(
+            lastAppliedRemoteAtRef.current,
+            toEpochMs(payload.updated_at),
+          );
+        }
+        return;
+      }
+
       if (fingerprint === lastFingerprintRef.current) return;
 
       const apply = shouldApplyRemoteContent({
         remoteUpdatedAt: payload.updated_at,
         lastAppliedRemoteAt: lastAppliedRemoteAtRef.current,
-        localDirty: localDirtyRef.current,
+        localDirty: localDirtyRef.current || saveInFlightRef.current,
         localEditAt: localEditAtRef.current,
       });
       if (!apply) return;
