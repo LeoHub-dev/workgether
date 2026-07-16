@@ -85,11 +85,22 @@ export function HomeClient({ username, initialDocuments }: Props) {
     router.refresh();
   }
 
+  function openDoc(id: string) {
+    // Bust client router/RSC cache from the empty "just created" visit.
+    router.push(`/docs/${id}?t=${Date.now()}`);
+    router.refresh();
+  }
+
   function DocRow({ doc }: { doc: DocumentListItem }) {
     return (
       <li className="group flex items-center gap-3 border-b border-stone-200/80 py-3 last:border-0">
         <Link
           href={`/docs/${doc.id}`}
+          prefetch={false}
+          onClick={(e) => {
+            e.preventDefault();
+            openDoc(doc.id);
+          }}
           className="min-w-0 flex-1 font-serif text-lg text-stone-900 hover:text-teal-900"
         >
           {doc.title}

@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache";
 import { getSessionUser } from "@/lib/auth";
 import { resolveDocumentAccess } from "@/lib/access";
 import { ApiError, jsonError, jsonOk } from "@/lib/errors";
@@ -95,6 +96,10 @@ export async function PATCH(request: Request, { params }: Params) {
           .eq("id", id);
       }
     }
+
+    // Invalidate App Router caches so the next open is not the empty first visit.
+    revalidatePath(`/docs/${id}`);
+    revalidatePath("/home");
 
     return jsonOk({ document: data });
   } catch (error) {
