@@ -48,6 +48,7 @@ import {
 } from "@/lib/import-content";
 import {
   contentFingerprint,
+  plainTextLength,
   saveCompletionState,
   shouldApplyRemoteContent,
   shouldIgnoreEditorChange,
@@ -342,6 +343,8 @@ export function DocumentEditor({
           lastFingerprintRef.current = contentFingerprint(liveAfter);
           localDirtyRef.current = false;
           setSaveState("saved");
+          // Refresh RSC cache so the next open is not the empty first visit.
+          router.refresh();
           return true;
         }
       } catch (e) {
@@ -350,7 +353,13 @@ export function DocumentEditor({
         return false;
       }
     });
-  }, [canEdit, initialDoc.id, readLiveContent, rememberLocalFingerprint]);
+  }, [
+    canEdit,
+    initialDoc.id,
+    readLiveContent,
+    rememberLocalFingerprint,
+    router,
+  ]);
 
   const scheduleContentSave = useCallback(() => {
     if (!canEdit) return;
@@ -446,6 +455,7 @@ export function DocumentEditor({
         }
       }
       router.push("/home");
+      router.refresh();
     },
     [canEdit, flushSave, initialDoc.id, readLiveContent, router],
   );
@@ -477,6 +487,71 @@ export function DocumentEditor({
     window.addEventListener("pagehide", onHide);
     return () => window.removeEventListener("pagehide", onHide);
   }, [canEdit, initialDoc.id, readLiveContent]);
+
+  /**
+   * Hydrate from the API on mount. The App Router can reuse the empty RSC
+   * payload from "New document" on the first reopen even though Saved wrote
+   * "abc" — a no-store GET fixes that without waiting for a second visit.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      try {
+        const res = await fetch(`/api/documents/${initialDoc.id}`, {
+          cache: "no-store",
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const serverContent = data.document?.content_json;
+        if (serverContent == null || cancelled) return;
+
+        const serverLen = plainTextLength(serverContent);
+        const localLen = plainTextLength(latestJson.current);
+        const serverFp = contentFingerprint(serverContent);
+        const localFp = contentFingerprint(latestJson.current);
+
+        // Only replace local view when server has more/different content and
+        // the user is not mid-edit on this mount.
+        if (localDirtyRef.current || userHasEditedRef.current) return;
+        if (serverFp === localFp) return;
+        if (serverLen < localLen) return;
+
+        // Wait until Lexical is mounted (first paint after New Doc reopen).
+        let editor = editorRef.current;
+        for (let i = 0; i < 40 && !editor; i++) {
+          await new Promise((r) => setTimeout(r, 25));
+          if (cancelled) return;
+          editor = editorRef.current;
+        }
+        if (!editor || cancelled) {
+          latestJson.current = serverContent;
+          return;
+        }
+        if (localDirtyRef.current || userHasEditedRef.current) return;
+
+        skipNextChange.current = true;
+        latestJson.current = serverContent;
+        lastFingerprintRef.current = serverFp;
+        initialFingerprintRef.current = serverFp;
+        if (data.document?.updated_at) {
+          lastAppliedRemoteAtRef.current = toEpochMs(data.document.updated_at);
+        }
+        editor.setEditorState(
+          editor.parseEditorState(JSON.stringify(serverContent)),
+        );
+        if (typeof data.document?.title === "string") {
+          setTitle(data.document.title);
+        }
+      } catch {
+        // Hydration is best-effort; editor still shows SSR props.
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialDoc.id]);
 
   const providerFactory = useCallback(
     (id: string, yjsDocMap: Map<string, import("yjs").Doc>) =>

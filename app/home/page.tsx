@@ -3,6 +3,9 @@ import { getSessionUser } from "@/lib/auth";
 import { HomeClient } from "@/components/HomeClient";
 import type { DocumentListItem } from "@/lib/types";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 async function fetchDocuments(): Promise<DocumentListItem[]> {
   const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   // Prefer direct DB access on the server instead of self-HTTP

@@ -51,6 +51,7 @@
 - Saves go through a **serialized `SaveQueue`** so Home navigation always waits for in-flight PATCHes (fixes new-doc “type abc → home → empty”).
 - Mount-time empty OnChange is ignored until the user actually edits.
 - Flush-on-home-navigation / `pagehide` keepalive as a backup.
+- After save, `revalidatePath` + `router.refresh()`, docs/home are `force-dynamic`, and the editor **re-fetches** `/api/documents/:id` on mount so the App Router cannot show the empty “just created” shell on the first reopen.
 - Clients **broadcast** content on `soft:doc:{id}` for peer format/text sync; `postgres_changes` is a backup.
 - Echoes of our own saves are ignored; remote apply is timestamp-aware (`lib/sync-content.ts`).
 - Presence avatars use Realtime Presence.

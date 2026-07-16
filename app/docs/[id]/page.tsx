@@ -4,6 +4,9 @@ import { resolveDocumentAccess } from "@/lib/access";
 import { DocumentEditor } from "@/components/editor/DocumentEditor";
 import { getServiceSupabase } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type Props = { params: Promise<{ id: string }> };
 
 export default async function DocPage({ params }: Props) {
@@ -40,6 +43,9 @@ export default async function DocPage({ params }: Props) {
 
   return (
     <DocumentEditor
+      // Remount when server content changes so Lexical is not stuck on the
+      // empty state from the first visit after "New document".
+      key={`${resolved.document.id}-${resolved.document.updated_at}`}
       document={resolved.document}
       user={user}
       access={resolved.access === "owner" ? "owner" : resolved.access}
