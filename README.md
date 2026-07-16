@@ -115,10 +115,23 @@ Optional: `NEXT_PUBLIC_APP_URL` = your production URL (not required for core flo
 ### Deploy steps
 
 1. Import **LeoHub-dev/workgether** (or your fork) in Vercel.
-2. Confirm Framework Preset **Next.js** and Root Directory `.`.
-3. Add the environment variables above.
-4. Ensure [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) has been run on Supabase **before** first login.
-5. Deploy.
+2. Set **Production Branch** to `main` (Settings → Git).
+3. Confirm Framework Preset **Next.js** and Root Directory is **empty** / `.` (not `app`, not a subfolder).
+4. Add the environment variables above.
+5. Ensure [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) has been run on Supabase **before** first login.
+6. Deploy from the latest `main` commit (Deployments → Redeploy, or push a new commit).
+
+### Troubleshooting: “No Next.js version detected”
+
+This almost always means Vercel is building a commit/branch that does **not** contain the app `package.json` (for example an old `main` that only had `.gitignore`), or **Root Directory** points at the wrong folder.
+
+Fix:
+
+1. In GitHub, open `main` and confirm `package.json` exists at the repo root and includes `"next"` under `dependencies`.
+2. In Vercel → **Settings → General → Root Directory**: clear it (repo root). Save.
+3. In Vercel → **Settings → General → Framework Preset**: **Next.js**.
+4. In Vercel → **Settings → Git**: Production Branch = `main`.
+5. **Deployments → … → Redeploy** the latest production deployment, or trigger a new deploy from current `main`. Do not redeploy an old failed commit from before the app was merged.
 
 ## Scripts
 
