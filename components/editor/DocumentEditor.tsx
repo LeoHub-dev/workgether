@@ -50,9 +50,11 @@ import {
   contentFingerprint,
   saveCompletionState,
   shouldApplyRemoteContent,
+  shouldIgnoreEditorChange,
   shouldIgnoreRemoteEcho,
   toEpochMs,
 } from "@/lib/sync-content";
+import { SaveQueue } from "@/lib/save-queue";
 
 type Props = {
   document: DocumentRow;
@@ -193,7 +195,6 @@ export function DocumentEditor({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const titleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextChange = useRef(false);
-  const needsFlushRef = useRef(false);
 
   const cursorColor = useMemo(() => colorForUsername(user.username), [user.username]);
 
@@ -253,9 +254,13 @@ export function DocumentEditor({
   const lastAppliedRemoteAtRef = useRef(toEpochMs(initialDoc.updated_at));
   const lastFingerprintRef = useRef(contentFingerprint(initialDoc.content_json));
   const recentLocalFingerprints = useRef<string[]>([]);
-  const saveInFlightRef = useRef(false);
   const latestSaveIdRef = useRef(0);
   const pendingTitleRef = useRef<string | null>(null);
+  const saveQueueRef = useRef(new SaveQueue());
+  const initialFingerprintRef = useRef(
+    contentFingerprint(initialDoc.content_json),
+  );
+  const userHasEditedRef = useRef(false);
 
   const rememberLocalFingerprint = useCallback((fp: string) => {
     const list = recentLocalFingerprints.current.filter((x) => x !== fp);
@@ -273,95 +278,78 @@ export function DocumentEditor({
   }, [rememberLocalFingerprint]);
 
   /**
-   * Coalescing save loop: always PATCH the *live* editor JSON, and if the user
-   * typed while a request was in flight, flush again. Prevents "Saved" while
-   * the DB still holds an older 1-character snapshot.
+   * Serialized coalescing save: waits for any in-flight PATCH, then writes the
+   * live editor JSON. Never returns early — critical when leaving a new doc.
    */
   const flushSave = useCallback(async (): Promise<boolean> => {
     if (!canEdit) return false;
-    if (saveInFlightRef.current) {
-      needsFlushRef.current = true;
-      return false;
-    }
-    saveInFlightRef.current = true;
-    needsFlushRef.current = false;
-    setSaveState("saving");
-    setSaveError(null);
-    let ok = false;
 
-    try {
-      // Loop until the persisted snapshot matches the live editor (and title).
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const saveId = ++latestSaveIdRef.current;
-        const contentSnapshot = readLiveContent();
-        const contentFp = contentFingerprint(contentSnapshot);
-        const titleSnapshot = pendingTitleRef.current;
-        const payload: { title?: string; content_json?: unknown } = {
-          content_json: contentSnapshot,
-        };
-        if (titleSnapshot != null) payload.title = titleSnapshot;
+    return saveQueueRef.current.run(async () => {
+      setSaveState("saving");
+      setSaveError(null);
 
-        rememberLocalFingerprint(contentFp);
-        if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
-        publishRef.current?.(contentSnapshot);
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const saveId = ++latestSaveIdRef.current;
+          const contentSnapshot = readLiveContent();
+          const contentFp = contentFingerprint(contentSnapshot);
+          const titleSnapshot = pendingTitleRef.current;
+          const payload: { title?: string; content_json?: unknown } = {
+            content_json: contentSnapshot,
+          };
+          if (titleSnapshot != null) payload.title = titleSnapshot;
 
-        const res = await fetch(`/api/documents/${initialDoc.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          keepalive: true,
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Save failed");
+          rememberLocalFingerprint(contentFp);
+          if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
+          publishRef.current?.(contentSnapshot);
 
-        const liveAfter = readLiveContent();
-        const completion = saveCompletionState({
-          saveId,
-          latestSaveId: latestSaveIdRef.current,
-          savedFingerprint: contentFp,
-          currentFingerprint: contentFingerprint(liveAfter),
-        });
+          const res = await fetch(`/api/documents/${initialDoc.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            keepalive: true,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Save failed");
 
-        const saved = data.document as DocumentRow | undefined;
-        if (saved?.updated_at && completion.isLatest) {
-          lastAppliedRemoteAtRef.current = toEpochMs(saved.updated_at);
-          publishRef.current?.(contentSnapshot, saved.updated_at);
+          const liveAfter = readLiveContent();
+          const completion = saveCompletionState({
+            saveId,
+            latestSaveId: latestSaveIdRef.current,
+            savedFingerprint: contentFp,
+            currentFingerprint: contentFingerprint(liveAfter),
+          });
+
+          const saved = data.document as DocumentRow | undefined;
+          if (saved?.updated_at && completion.isLatest) {
+            lastAppliedRemoteAtRef.current = toEpochMs(saved.updated_at);
+            publishRef.current?.(liveAfter, saved.updated_at);
+          }
+
+          if (titleSnapshot != null && pendingTitleRef.current === titleSnapshot) {
+            pendingTitleRef.current = null;
+          }
+
+          if (
+            !completion.isLatest ||
+            completion.stillDirty ||
+            pendingTitleRef.current != null
+          ) {
+            continue;
+          }
+
+          lastFingerprintRef.current = contentFingerprint(liveAfter);
+          localDirtyRef.current = false;
+          setSaveState("saved");
+          return true;
         }
-
-        if (titleSnapshot != null && pendingTitleRef.current === titleSnapshot) {
-          pendingTitleRef.current = null;
-        }
-
-        if (!completion.isLatest || completion.stillDirty || pendingTitleRef.current != null) {
-          continue;
-        }
-
-        lastFingerprintRef.current = contentFp;
-        localDirtyRef.current = false;
-        setSaveState("saved");
-        ok = true;
-        break;
+      } catch (e) {
+        setSaveState("error");
+        setSaveError(e instanceof Error ? e.message : "Save failed");
+        return false;
       }
-    } catch (e) {
-      setSaveState("error");
-      setSaveError(e instanceof Error ? e.message : "Save failed");
-      ok = false;
-    } finally {
-      saveInFlightRef.current = false;
-      if (
-        needsFlushRef.current ||
-        localDirtyRef.current ||
-        pendingTitleRef.current != null
-      ) {
-        needsFlushRef.current = false;
-        if (saveTimer.current) clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => {
-          void flushSave();
-        }, 50);
-      }
-    }
-    return ok;
+    });
   }, [canEdit, initialDoc.id, readLiveContent, rememberLocalFingerprint]);
 
   const scheduleContentSave = useCallback(() => {
@@ -374,7 +362,7 @@ export function DocumentEditor({
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       void flushSave();
-    }, 600);
+    }, 500);
   }, [canEdit, flushSave, queueBroadcast]);
 
   const scheduleTitleSave = useCallback(
@@ -386,7 +374,7 @@ export function DocumentEditor({
       if (titleTimer.current) clearTimeout(titleTimer.current);
       titleTimer.current = setTimeout(() => {
         void flushSave();
-      }, 600);
+      }, 500);
     },
     [canEdit, flushSave],
   );
@@ -394,13 +382,24 @@ export function DocumentEditor({
   const handleChange = useCallback(
     (editorState: EditorState, editor: LexicalEditor) => {
       editorRef.current = editor;
-      // Always keep latestJson aligned with the editor, even for programmatic
-      // applies — dropping this update caused saves of a stale 1-char snapshot.
       latestJson.current = editorState.toJSON();
       if (skipNextChange.current) {
         skipNextChange.current = false;
         return;
       }
+
+      const nextFp = contentFingerprint(latestJson.current);
+      if (
+        shouldIgnoreEditorChange({
+          userHasEdited: userHasEditedRef.current,
+          nextFingerprint: nextFp,
+          initialFingerprint: initialFingerprintRef.current,
+        })
+      ) {
+        // Mount-time empty OnChange on a new document — do not schedule a save.
+        return;
+      }
+      userHasEditedRef.current = true;
       scheduleContentSave();
     },
     [scheduleContentSave],
@@ -418,6 +417,7 @@ export function DocumentEditor({
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (titleTimer.current) clearTimeout(titleTimer.current);
     pendingTitleRef.current = title;
+    userHasEditedRef.current = true;
     localDirtyRef.current = true;
     void flushSave();
   }, [flushSave, title]);
@@ -427,38 +427,56 @@ export function DocumentEditor({
       e.preventDefault();
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (titleTimer.current) clearTimeout(titleTimer.current);
-      if (canEdit && (localDirtyRef.current || saveState === "dirty" || saveState === "saving")) {
-        await flushSave();
-      } else if (canEdit) {
-        // Final belt-and-suspenders write of whatever is on screen.
+      if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
+
+      if (canEdit && userHasEditedRef.current) {
         localDirtyRef.current = true;
-        await flushSave();
+        // Must await the full save queue — previously an in-flight empty save
+        // made flushSave return immediately and navigation dropped "abc".
+        const ok = await flushSave();
+        if (!ok) {
+          // Still navigate, but try one keepalive write of live content.
+          const content = readLiveContent();
+          void fetch(`/api/documents/${initialDoc.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content_json: content }),
+            keepalive: true,
+          });
+        }
       }
       router.push("/home");
     },
-    [canEdit, flushSave, router, saveState],
+    [canEdit, flushSave, initialDoc.id, readLiveContent, router],
   );
+
+  // Clear pending timers on unmount (React Strict Mode / navigation).
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (titleTimer.current) clearTimeout(titleTimer.current);
+      if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
+    };
+  }, []);
 
   // Flush pending edits if the tab is closed / refreshed.
   useEffect(() => {
     const onHide = () => {
-      if (!canEdit) return;
-      if (!localDirtyRef.current && saveState !== "dirty") return;
+      if (!canEdit || !userHasEditedRef.current) return;
       const content = readLiveContent();
-      const body = JSON.stringify({
-        content_json: content,
-        title: pendingTitleRef.current ?? undefined,
-      });
       void fetch(`/api/documents/${initialDoc.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body,
+        body: JSON.stringify({
+          content_json: content,
+          title: pendingTitleRef.current ?? undefined,
+        }),
         keepalive: true,
       });
     };
     window.addEventListener("pagehide", onHide);
     return () => window.removeEventListener("pagehide", onHide);
-  }, [canEdit, initialDoc.id, readLiveContent, saveState]);
+  }, [canEdit, initialDoc.id, readLiveContent]);
 
   const providerFactory = useCallback(
     (id: string, yjsDocMap: Map<string, import("yjs").Doc>) =>
@@ -542,7 +560,7 @@ export function DocumentEditor({
       const apply = shouldApplyRemoteContent({
         remoteUpdatedAt: payload.updated_at,
         lastAppliedRemoteAt: lastAppliedRemoteAtRef.current,
-        localDirty: localDirtyRef.current || saveInFlightRef.current,
+        localDirty: localDirtyRef.current || userHasEditedRef.current,
         localEditAt: localEditAtRef.current,
       });
       if (!apply) return;

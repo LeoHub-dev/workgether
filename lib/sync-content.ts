@@ -135,3 +135,16 @@ export function plainTextLength(contentJson: unknown): number {
     return 0;
   }
 }
+
+/**
+ * Lexical fires OnChange on mount with the initial empty state. Scheduling a
+ * save from that event races the first real keystrokes on a new document.
+ */
+export function shouldIgnoreEditorChange(options: {
+  userHasEdited: boolean;
+  nextFingerprint: string;
+  initialFingerprint: string;
+}): boolean {
+  if (options.userHasEdited) return false;
+  return options.nextFingerprint === options.initialFingerprint;
+}
