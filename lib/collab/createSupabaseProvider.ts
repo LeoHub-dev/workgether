@@ -40,15 +40,17 @@ export function createSupabaseYjsProvider(
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // Room id must match across clients. Keep throttle low so format-only
+  // updates (bold/italic) are not stuck behind a long merge window.
   const supabaseProvider = new SupabaseProvider(`doc:${id}`, doc, supabase, {
     awareness: true,
     persistence: {
       table: "yjs_documents",
       roomColumn: "room",
       stateColumn: "state",
-      storeTimeout: 1500,
+      storeTimeout: 1000,
     },
-    broadcastThrottleMs: 50,
+    broadcastThrottleMs: 16,
   });
 
   // Viewers still receive updates but we avoid local awareness write noise
