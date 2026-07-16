@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -33,6 +40,10 @@ import {
 } from "@/lib/collab/createSupabaseProvider";
 import type { AttachmentRow, DocumentRow, SessionUser, ShareRole } from "@/lib/types";
 import { getBrowserSupabase } from "@/lib/supabase/client";
+import {
+  serializeImportedContent,
+  shouldConfirmReplace,
+} from "@/lib/import-content";
 
 type Props = {
   document: DocumentRow;
@@ -48,6 +59,19 @@ function EditableGate({ canEdit }: { canEdit: boolean }) {
   useEffect(() => {
     editor.setEditable(canEdit);
   }, [editor, canEdit]);
+  return null;
+}
+
+/** Capture the Lexical editor instance as soon as the composer mounts. */
+function EditorRefPlugin({
+  editorRef,
+}: {
+  editorRef: MutableRefObject<LexicalEditor | null>;
+}) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor, editorRef]);
   return null;
 }
 
@@ -208,6 +232,14 @@ export function DocumentEditor({
     [scheduleContentSave],
   );
 
+  const waitForEditor = useCallback(async (): Promise<LexicalEditor> => {
+    for (let i = 0; i < 40; i++) {
+      if (editorRef.current) return editorRef.current;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error("Editor is not ready. Wait a moment and try Import again.");
+  }, []);
+
   const manualSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (titleTimer.current) clearTimeout(titleTimer.current);
@@ -226,18 +258,14 @@ export function DocumentEditor({
 
   const handleImport = useCallback(
     async (file: File) => {
-      const editor = editorRef.current;
-      const isEmpty = (() => {
-        if (!editor) return true;
-        let empty = true;
-        editor.getEditorState().read(() => {
-          const text = $getRoot().getTextContent().trim();
-          empty = text.length === 0;
-        });
-        return empty;
-      })();
+      const editor = await waitForEditor();
 
-      if (!isEmpty) {
+      let currentText = "";
+      editor.getEditorState().read(() => {
+        currentText = $getRoot().getTextContent();
+      });
+
+      if (shouldConfirmReplace(currentText)) {
         const ok = window.confirm(
           "This document has content. Importing will replace it. Continue?",
         );
@@ -253,12 +281,17 @@ export function DocumentEditor({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Import failed");
 
+      const serialized = serializeImportedContent(data.content_json);
       latestJson.current = data.content_json;
       skipNextChange.current = true;
-      editor?.setEditorState(editor.parseEditorState(JSON.stringify(data.content_json)));
+
+      // Apply imported Lexical JSON into the live editor (works for soft sync;
+      // for Yjs, setEditorState updates the bound doc and we cleared server Yjs state).
+      editor.setEditorState(editor.parseEditorState(serialized));
       setSaveState("saved");
+      setSaveError(null);
     },
-    [initialDoc.id],
+    [initialDoc.id, waitForEditor],
   );
 
   const onRemoteContent = useCallback(
@@ -321,6 +354,7 @@ export function DocumentEditor({
         )}
         <ListPlugin />
         <OnChangePlugin onChange={handleChange} ignoreSelectionChange />
+        <EditorRefPlugin editorRef={editorRef} />
         <EditableGate canEdit={canEdit} />
         <SoftSyncPlugin
           documentId={initialDoc.id}

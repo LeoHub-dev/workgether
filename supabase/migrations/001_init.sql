@@ -79,10 +79,19 @@ create trigger documents_set_updated_at
   execute function public.set_documents_updated_at();
 
 -- Storage bucket for attachments (images, pdf, etc.)
--- Run in SQL editor if the bucket does not already exist:
-insert into storage.buckets (id, name, public)
-values ('attachments', 'attachments', false)
-on conflict (id) do nothing;
+-- Skipped on plain Postgres (no `storage` schema); Supabase cloud/local has it.
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'storage' and table_name = 'buckets'
+  ) then
+    insert into storage.buckets (id, name, public)
+    values ('attachments', 'attachments', false)
+    on conflict (id) do nothing;
+  end if;
+end $$;
 
 -- Allow authenticated service-role uploads via API; policies are permissive
 -- because the Next.js server uses the service role for trusted mutations.

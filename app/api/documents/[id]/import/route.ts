@@ -36,9 +36,11 @@ export async function POST(request: Request, { params }: Params) {
     const parsed = await parseContentFile(buffer, file.name);
 
     const supabase = getServiceSupabase();
+    // Persist Lexical JSON and clear collab snapshots so Yjs does not restore
+    // pre-import content on the next load.
     const { data, error } = await supabase
       .from("documents")
-      .update({ content_json: parsed.content_json })
+      .update({ content_json: parsed.content_json, yjs_state: null })
       .eq("id", id)
       .select("*")
       .single();
@@ -46,6 +48,14 @@ export async function POST(request: Request, { params }: Params) {
     if (error || !data) {
       console.error(error);
       throw new ApiError(500, "Failed to import content");
+    }
+
+    const { error: yjsError } = await supabase
+      .from("yjs_documents")
+      .delete()
+      .eq("room", id);
+    if (yjsError) {
+      console.error("Failed to clear yjs_documents after import", yjsError);
     }
 
     return jsonOk({
