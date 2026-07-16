@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f3efe6;
+  --foreground: #1c1917;
+  --brand: #115e59;
+  --brand-ink: #042f2e;
+  --paper: #ffffff;
+  --muted: #78716c;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans), "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-display), "Libre Baskerville", Georgia, serif;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+.font-serif {
+  font-family: var(--font-serif);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Lexical remote cursor placeholders */
+.LexicalTheme__paragraph {
+  margin-bottom: 0.5rem;
+}

@@ -1,0 +1,50 @@
+{
+  "name": "workgether",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@lexical/clipboard": "^0.47.0",
+    "@lexical/history": "^0.47.0",
+    "@lexical/html": "^0.47.0",
+    "@lexical/link": "^0.47.0",
+    "@lexical/list": "^0.47.0",
+    "@lexical/markdown": "^0.47.0",
+    "@lexical/react": "^0.47.0",
+    "@lexical/rich-text": "^0.47.0",
+    "@lexical/selection": "^0.47.0",
+    "@lexical/utils": "^0.47.0",
+    "@lexical/yjs": "^0.47.0",
+    "@supabase-labs/y-supabase": "^0.1.0",
+    "@supabase/supabase-js": "^2.110.6",
+    "bcryptjs": "^3.0.3",
+    "jose": "^6.2.3",
+    "lexical": "^0.47.0",
+    "mammoth": "^1.12.0",
+    "next": "15.5.20",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "yjs": "^13.6.31"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.3",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.20",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}
