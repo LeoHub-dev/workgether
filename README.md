@@ -2,7 +2,7 @@
 
 Lightweight Google Docs–style collaborative editor built with **Next.js**, **Lexical**, **Yjs**, and **Supabase** (Postgres + Storage + Realtime). No TipTap Cloud or Liveblocks.
 
-Product requirements: [PRD.md](./PRD.md) · Design notes: [ARCHITECTURE.md](./ARCHITECTURE.md)
+Product requirements: [PRD.md](./PRD.md) · Design notes: [ARCHITECTURE.md](./ARCHITECTURE.md) · AI process: [AI_WORKFLOW.md](./AI_WORKFLOW.md)
 
 ## Features
 
@@ -222,6 +222,7 @@ npm run lint     # ESLint
 - `supabase/migrations/001_init.sql` — schema + storage bucket
 - `PRD.md` — product requirements
 - `ARCHITECTURE.md` — design decisions and realtime fallback
+- `AI_WORKFLOW.md` — how AI was used to plan and build
 
 ## Soft sync fallback
 
