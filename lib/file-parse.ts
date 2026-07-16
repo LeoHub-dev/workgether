@@ -2,23 +2,26 @@ import mammoth from "mammoth";
 import { ApiError } from "@/lib/errors";
 import { emptyLexicalState } from "@/lib/access";
 
-function textToLexicalState(text: string) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+/** Convert plain text / light markdown into a Lexical editor-state JSON tree. */
+export function textToLexicalState(text: string) {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.length ? normalized.split("\n") : [""];
   const children = lines.map((line) => {
     const trimmed = line.trimEnd();
     // Simple markdown heading detection for .md
     const heading = /^(#{1,3})\s+(.*)$/.exec(trimmed);
     if (heading) {
       const tag = `h${heading[1].length}` as "h1" | "h2" | "h3";
+      const headingText = heading[2];
       return {
-        children: heading[2]
+        children: headingText
           ? [
               {
                 detail: 0,
                 format: 0,
                 mode: "normal",
                 style: "",
-                text: heading[2],
+                text: headingText,
                 type: "text",
                 version: 1,
               },

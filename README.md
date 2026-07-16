@@ -33,11 +33,58 @@ npm install
 cp .env.example .env.local
 ```
 
-### 2. Supabase project
+### 2. Database — pick one
+
+#### Option A (recommended): Local Supabase via Docker (no cloud project)
+
+This runs Postgres + Storage + Realtime on your machine and replaces a hosted Supabase project for local work.
+
+**Requirements:** Docker Desktop (or Docker Engine) running.
+
+```bash
+# Install CLI once (or use npx each time)
+npm install -g supabase
+
+# Start local stack (API http://127.0.0.1:54321, DB port 54322)
+npx supabase start
+
+# Apply schema + storage bucket
+npx supabase db reset
+# (runs supabase/migrations/*.sql against the local DB)
+```
+
+Copy keys from the start/status output into `.env.local`:
+
+```bash
+npx supabase status
+```
+
+| Status field | Env var |
+|--------------|---------|
+| `API URL` | `NEXT_PUBLIC_SUPABASE_URL` (e.g. `http://127.0.0.1:54321`) |
+| `anon key` | `NEXT_PUBLIC_SUPABASE_ANON_KEY` |
+| `service_role key` | `SUPABASE_SERVICE_ROLE_KEY` |
+
+Also set:
+
+```env
+AUTH_SECRET=dev-secret-change-me-to-32-chars-min
+NEXT_PUBLIC_COLLAB_MODE=soft
+```
+
+`soft` avoids Yjs/Realtime edge cases while you develop import/edit flows; switch to `yjs` when you want live collab locally.
+
+Stop the stack when done:
+
+```bash
+npx supabase stop
+```
+
+#### Option B: Cloud Supabase
 
 1. Create a free project at [supabase.com](https://supabase.com).
 2. Open **SQL Editor** and run [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql).
-3. Confirm Storage bucket **`attachments`** exists (the migration inserts it).
+3. Confirm Storage bucket **`attachments`** exists (the migration inserts it when `storage.buckets` exists).
 4. (Optional for soft sync) enable Realtime for `documents`:
    - Database → Publications → `supabase_realtime` → add `documents`.
 5. Copy API keys into `.env.local` (see [Where to get Supabase keys](#where-to-get-supabase-keys) below).
@@ -51,9 +98,18 @@ AUTH_SECRET=your-long-random-secret
 NEXT_PUBLIC_COLLAB_MODE=yjs
 ```
 
+#### Option C: Plain Postgres only (SQL inspection)
+
+[`docker-compose.yml`](docker-compose.yml) starts Postgres 16 on port **54322** and loads the migration. This app still talks to Supabase’s HTTP API (`supabase-js`), so **Option A or B is required to run the Next.js app**. Use compose if you only want a local SQL database to inspect schema/data:
+
+```bash
+docker compose up -d
+# psql postgres://postgres:postgres@127.0.0.1:54322/workgether
+```
+
 ### Where to get Supabase keys
 
-In the [Supabase Dashboard](https://supabase.com/dashboard):
+**Cloud:** In the [Supabase Dashboard](https://supabase.com/dashboard):
 
 1. Open your project.
 2. Go to **Project Settings** (gear icon) → **API**.
@@ -62,17 +118,27 @@ In the [Supabase Dashboard](https://supabase.com/dashboard):
    - **Project API keys → `anon` `public`** → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - **Project API keys → `service_role` `secret`** → `SUPABASE_SERVICE_ROLE_KEY`
 
+**Local:** run `npx supabase status` (see Option A).
+
 **Important:** The `service_role` key bypasses Row Level Security. Use it **only** on the server (Next.js API routes / Vercel env). Never put it in client code or commit it to git. In the dashboard it may be hidden behind a **Reveal** / eye icon.
 
 If your project uses the newer API keys UI, look for **Legacy API keys** or **Secret keys** — you still need the `service_role` JWT (starts with `eyJ...`) for this app’s server client.
 
-### 3. Run
+### 3. Run the app
 
 ```bash
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+### 4. Tests
+
+```bash
+npm test
+```
+
+Includes auth helpers and **import / edit-file** coverage (`tests/import-content.test.ts`): `.txt`/`.md` parsing, Lexical JSON shape, replace-confirm rules.
 
 ## Demo flow (two accounts)
 

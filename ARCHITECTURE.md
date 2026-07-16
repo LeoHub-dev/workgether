@@ -56,8 +56,10 @@ Set `NEXT_PUBLIC_COLLAB_MODE=soft` in Vercel / `.env.local` to force the fallbac
 | Action | Types | Behavior |
 |--------|-------|----------|
 | Home → Upload as new | `.txt` `.md` `.docx` | Parse → create new document titled from filename |
-| Editor → Import content | `.txt` `.md` `.docx` | Replace current Lexical JSON (confirm if non-empty) |
+| Editor → Import content | `.txt` `.md` `.docx` | Parse → write `content_json`, clear `yjs_state` + `yjs_documents` row, replace live Lexical state (confirm if non-empty) |
 | Editor → Attach file | images + `.pdf` | Upload to Storage; list under Files |
+
+Import parsing lives in `lib/file-parse.ts` (`textToLexicalState` / `parseContentFile`). Editor apply helpers are in `lib/import-content.ts`. The editor captures Lexical via `EditorRefPlugin` so import works even before the user types.
 
 ## Trust boundaries
 

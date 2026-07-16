@@ -1,0 +1,25 @@
+# Local Postgres for development without a cloud Supabase project.
+# Prefer `npx supabase start` (see README) when you also need Storage + Realtime.
+# This compose file is useful if you only need SQL inspection or a plain DB.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "54322:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: workgether
+    volumes:
+      - workgether_pg:/var/lib/postgresql/data
+      - ./supabase/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d workgether"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  workgether_pg:
