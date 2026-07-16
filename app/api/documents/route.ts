@@ -22,56 +22,6 @@ export async function GET() {
       throw new ApiError(500, "Failed to list documents");
     }
 
-    const { data: sharedRows, error: sharedError } = await supabase
-      .from("document_access")
-      .select(
-        "role, documents(id, title, updated_at, created_at, owner_id, users:owner_id(username))",
-      )
-      .eq("user_id", user.id);
-
-    if (sharedError) {
-      console.error(sharedError);
-      // Fallback without join if FK hint fails
-      const { data: accessOnly } = await supabase
-        .from("document_access")
-        .select("role, document_id")
-        .eq("user_id", user.id);
-
-      const shared: DocumentListItem[] = [];
-      if (accessOnly?.length) {
-        const ids = accessOnly.map((r) => r.document_id);
-        const { data: docs } = await supabase
-          .from("documents")
-          .select("id, title, updated_at, created_at, owner_id")
-          .in("id", ids)
-          .neq("owner_id", user.id);
-
-        for (const doc of docs ?? []) {
-          const role = accessOnly.find((a) => a.document_id === doc.id)?.role;
-          if (!role) continue;
-          shared.push({
-            id: doc.id,
-            title: doc.title,
-            updated_at: doc.updated_at,
-            created_at: doc.created_at,
-            badge: "shared",
-            role: role as "viewer" | "editor",
-          });
-        }
-      }
-
-      const ownedItems: DocumentListItem[] = (owned ?? []).map((d) => ({
-        id: d.id,
-        title: d.title,
-        updated_at: d.updated_at,
-        created_at: d.created_at,
-        badge: "owned" as const,
-        role: "owner" as const,
-      }));
-
-      return jsonOk({ documents: [...ownedItems, ...shared] });
-    }
-
     const ownedItems: DocumentListItem[] = (owned ?? []).map((d) => ({
       id: d.id,
       title: d.title,
@@ -81,26 +31,42 @@ export async function GET() {
       role: "owner" as const,
     }));
 
+    const { data: accessRows, error: accessError } = await supabase
+      .from("document_access")
+      .select("role, document_id")
+      .eq("user_id", user.id);
+
+    if (accessError) {
+      console.error(accessError);
+      throw new ApiError(500, "Failed to list shared documents");
+    }
+
     const shared: DocumentListItem[] = [];
-    for (const row of sharedRows ?? []) {
-      const doc = row.documents as unknown as {
-        id: string;
-        title: string;
-        updated_at: string;
-        created_at: string;
-        owner_id: string;
-        users?: { username?: string } | null;
-      } | null;
-      if (!doc || doc.owner_id === user.id) continue;
-      shared.push({
-        id: doc.id,
-        title: doc.title,
-        updated_at: doc.updated_at,
-        created_at: doc.created_at,
-        badge: "shared",
-        role: row.role as "viewer" | "editor",
-        owner_username: doc.users?.username,
-      });
+    if (accessRows?.length) {
+      const ids = accessRows.map((r) => r.document_id);
+      const { data: docs, error: docsError } = await supabase
+        .from("documents")
+        .select("id, title, updated_at, created_at, owner_id")
+        .in("id", ids)
+        .neq("owner_id", user.id);
+
+      if (docsError) {
+        console.error(docsError);
+        throw new ApiError(500, "Failed to load shared documents");
+      }
+
+      for (const doc of docs ?? []) {
+        const role = accessRows.find((a) => a.document_id === doc.id)?.role;
+        if (!role) continue;
+        shared.push({
+          id: doc.id,
+          title: doc.title,
+          updated_at: doc.updated_at,
+          created_at: doc.created_at,
+          badge: "shared",
+          role: role as "viewer" | "editor",
+        });
+      }
     }
 
     return jsonOk({ documents: [...ownedItems, ...shared] });
