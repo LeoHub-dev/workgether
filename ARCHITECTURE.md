@@ -48,7 +48,9 @@
 ### Soft sync details (default)
 
 - Debounced autosave writes **live** Lexical JSON from `editor.getEditorState()` (not a stale ref).
-- Saves use a **coalescing flush loop** + flush-on-home-navigation / `pagehide` keepalive.
+- Saves go through a **serialized `SaveQueue`** so Home navigation always waits for in-flight PATCHes (fixes new-doc “type abc → home → empty”).
+- Mount-time empty OnChange is ignored until the user actually edits.
+- Flush-on-home-navigation / `pagehide` keepalive as a backup.
 - Clients **broadcast** content on `soft:doc:{id}` for peer format/text sync; `postgres_changes` is a backup.
 - Echoes of our own saves are ignored; remote apply is timestamp-aware (`lib/sync-content.ts`).
 - Presence avatars use Realtime Presence.
