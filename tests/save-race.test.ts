@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   contentFingerprint,
+  plainTextLength,
   saveCompletionState,
   shouldIgnoreRemoteEcho,
 } from "@/lib/sync-content";
@@ -43,6 +44,13 @@ describe("saveCompletionState (stale autosave race)", () => {
     });
     expect(result.isLatest).toBe(true);
     expect(result.stillDirty).toBe(false);
+  });
+});
+
+describe("plainTextLength (reload sanity)", () => {
+  it("counts full text not just the first character", () => {
+    expect(plainTextLength(textToLexicalState("a"))).toBe(1);
+    expect(plainTextLength(textToLexicalState("abc"))).toBe(3);
   });
 });
 

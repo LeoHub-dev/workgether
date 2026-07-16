@@ -53,7 +53,7 @@ export async function POST(request: Request, { params }: Params) {
     const { error: yjsError } = await supabase
       .from("yjs_documents")
       .delete()
-      .eq("room", id);
+      .in("room", [id, `doc:${id}`]);
     if (yjsError) {
       console.error("Failed to clear yjs_documents after import", yjsError);
     }
