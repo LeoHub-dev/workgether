@@ -210,6 +210,9 @@ export function DocumentEditor({
     return latestJson.current;
   }, []);
 
+  // Capture first-paint content only — do not recreate Lexical config when the
+  // parent re-renders after save/refresh (that remounts the editor and steals focus).
+  const bootContentRef = useRef(initialDoc.content_json);
   const initialConfig = useMemo(
     () => ({
       namespace: `workgether-${initialDoc.id}`,
@@ -217,8 +220,8 @@ export function DocumentEditor({
       editorState:
         collabMode === "yjs"
           ? null
-          : initialDoc.content_json
-            ? JSON.stringify(initialDoc.content_json)
+          : bootContentRef.current
+            ? JSON.stringify(bootContentRef.current)
             : undefined,
       theme: {
         paragraph: "mb-2",
@@ -243,7 +246,7 @@ export function DocumentEditor({
         console.error(error);
       },
     }),
-    [canEdit, collabMode, initialDoc.content_json, initialDoc.id],
+    [canEdit, collabMode, initialDoc.id],
   );
 
   const publishRef = useRef<((content: unknown, updatedAt?: string) => void) | null>(
@@ -343,8 +346,6 @@ export function DocumentEditor({
           lastFingerprintRef.current = contentFingerprint(liveAfter);
           localDirtyRef.current = false;
           setSaveState("saved");
-          // Refresh RSC cache so the next open is not the empty first visit.
-          router.refresh();
           return true;
         }
       } catch (e) {
@@ -353,13 +354,7 @@ export function DocumentEditor({
         return false;
       }
     });
-  }, [
-    canEdit,
-    initialDoc.id,
-    readLiveContent,
-    rememberLocalFingerprint,
-    router,
-  ]);
+  }, [canEdit, initialDoc.id, readLiveContent, rememberLocalFingerprint]);
 
   const scheduleContentSave = useCallback(() => {
     if (!canEdit) return;
@@ -489,14 +484,18 @@ export function DocumentEditor({
   }, [canEdit, initialDoc.id, readLiveContent]);
 
   /**
-   * Hydrate from the API on mount. The App Router can reuse the empty RSC
-   * payload from "New document" on the first reopen even though Saved wrote
-   * "abc" — a no-store GET fixes that without waiting for a second visit.
+   * One-shot hydrate from the API when this mount still shows the empty
+   * "just created" shell. Must not run after the user types, and must not
+   * call router.refresh / remount — that steals focus while editing.
    */
   useEffect(() => {
     let cancelled = false;
     const hydrate = async () => {
       try {
+        // Only heal the empty first-reopen case; never interrupt an active session.
+        if (userHasEditedRef.current || localDirtyRef.current) return;
+        if (plainTextLength(latestJson.current) > 0) return;
+
         const res = await fetch(`/api/documents/${initialDoc.id}`, {
           cache: "no-store",
         });
@@ -506,29 +505,20 @@ export function DocumentEditor({
         if (serverContent == null || cancelled) return;
 
         const serverLen = plainTextLength(serverContent);
-        const localLen = plainTextLength(latestJson.current);
-        const serverFp = contentFingerprint(serverContent);
-        const localFp = contentFingerprint(latestJson.current);
+        if (serverLen === 0) return;
+        if (userHasEditedRef.current || localDirtyRef.current) return;
 
-        // Only replace local view when server has more/different content and
-        // the user is not mid-edit on this mount.
-        if (localDirtyRef.current || userHasEditedRef.current) return;
-        if (serverFp === localFp) return;
-        if (serverLen < localLen) return;
-
-        // Wait until Lexical is mounted (first paint after New Doc reopen).
         let editor = editorRef.current;
         for (let i = 0; i < 40 && !editor; i++) {
           await new Promise((r) => setTimeout(r, 25));
           if (cancelled) return;
           editor = editorRef.current;
         }
-        if (!editor || cancelled) {
-          latestJson.current = serverContent;
-          return;
-        }
-        if (localDirtyRef.current || userHasEditedRef.current) return;
+        if (!editor || cancelled) return;
+        if (userHasEditedRef.current || localDirtyRef.current) return;
+        if (plainTextLength(latestJson.current) > 0) return;
 
+        const serverFp = contentFingerprint(serverContent);
         skipNextChange.current = true;
         latestJson.current = serverContent;
         lastFingerprintRef.current = serverFp;
@@ -543,7 +533,7 @@ export function DocumentEditor({
           setTitle(data.document.title);
         }
       } catch {
-        // Hydration is best-effort; editor still shows SSR props.
+        // Best-effort only.
       }
     };
 
