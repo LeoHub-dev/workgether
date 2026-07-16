@@ -2,6 +2,8 @@
 
 Lightweight Google Docs–style collaborative editor built with **Next.js**, **Lexical**, **Yjs**, and **Supabase** (Postgres + Storage + Realtime). No TipTap Cloud or Liveblocks.
 
+Product requirements: [PRD.md](./PRD.md) · Design notes: [ARCHITECTURE.md](./ARCHITECTURE.md)
+
 ## Features
 
 - Username + password auth (auto-register if username is new; error if password is wrong)
@@ -38,7 +40,7 @@ cp .env.example .env.local
 3. Confirm Storage bucket **`attachments`** exists (the migration inserts it).
 4. (Optional for soft sync) enable Realtime for `documents`:
    - Database → Publications → `supabase_realtime` → add `documents`.
-5. Copy **Project URL**, **anon key**, and **service_role key** from Settings → API into `.env.local`.
+5. Copy API keys into `.env.local` (see [Where to get Supabase keys](#where-to-get-supabase-keys) below).
 6. Set a long random `AUTH_SECRET` (32+ characters).
 
 ```env
@@ -48,6 +50,21 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 AUTH_SECRET=your-long-random-secret
 NEXT_PUBLIC_COLLAB_MODE=yjs
 ```
+
+### Where to get Supabase keys
+
+In the [Supabase Dashboard](https://supabase.com/dashboard):
+
+1. Open your project.
+2. Go to **Project Settings** (gear icon) → **API**.
+3. Copy:
+   - **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
+   - **Project API keys → `anon` `public`** → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - **Project API keys → `service_role` `secret`** → `SUPABASE_SERVICE_ROLE_KEY`
+
+**Important:** The `service_role` key bypasses Row Level Security. Use it **only** on the server (Next.js API routes / Vercel env). Never put it in client code or commit it to git. In the dashboard it may be hidden behind a **Reveal** / eye icon.
+
+If your project uses the newer API keys UI, look for **Legacy API keys** or **Secret keys** — you still need the `service_role` JWT (starts with `eyJ...`) for this app’s server client.
 
 ### 3. Run
 
@@ -66,17 +83,42 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Vercel deploy
 
-1. Import the GitHub repo in Vercel.
-2. Set environment variables (same as `.env.example`):
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `AUTH_SECRET`
-   - `NEXT_PUBLIC_COLLAB_MODE` (`yjs` or `soft`)
-3. Deploy. Run the SQL migration on Supabase before first login.
-4. Optional: set `NEXT_PUBLIC_APP_URL` to your production URL (not required for core flows).
+### Project configuration
 
-Framework preset: **Next.js**. Build command: `next build`.
+When importing the GitHub repo in the Vercel dashboard, use:
+
+| Setting | Value |
+|---------|--------|
+| **Framework Preset** (also shown as Application Preset) | **Next.js** |
+| **Root Directory** | `.` (repo root — leave default; do not set a subfolder) |
+| **Build Command** | `next build` (default for Next.js) |
+| **Output Directory** | leave default (Next.js handles this) |
+| **Install Command** | `npm install` (default) |
+| **Node.js Version** | 20.x recommended |
+
+This app is not a monorepo. Root Directory must stay at the repository root where `package.json` and `app/` live.
+
+### Environment variables
+
+In **Project → Settings → Environment Variables**, add (for Production / Preview as needed):
+
+| Name | Notes |
+|------|--------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase Project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase `anon` `public` key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase `service_role` `secret` key — [where to get it](#where-to-get-supabase-keys) |
+| `AUTH_SECRET` | Long random string (32+ chars) for signing cookies |
+| `NEXT_PUBLIC_COLLAB_MODE` | `yjs` (default) or `soft` |
+
+Optional: `NEXT_PUBLIC_APP_URL` = your production URL (not required for core flows).
+
+### Deploy steps
+
+1. Import **LeoHub-dev/workgether** (or your fork) in Vercel.
+2. Confirm Framework Preset **Next.js** and Root Directory `.`.
+3. Add the environment variables above.
+4. Ensure [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) has been run on Supabase **before** first login.
+5. Deploy.
 
 ## Scripts
 
@@ -99,6 +141,7 @@ npm run lint     # ESLint
 - `lib/auth.ts` — cookie session (jose)
 - `lib/supabase/server.ts` — service role client
 - `supabase/migrations/001_init.sql` — schema + storage bucket
+- `PRD.md` — product requirements
 - `ARCHITECTURE.md` — design decisions and realtime fallback
 
 ## Soft sync fallback
