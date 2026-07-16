@@ -113,3 +113,25 @@ export function shouldIgnoreRemoteEcho(options: {
   }
   return false;
 }
+
+/** Best-effort plain text length from Lexical JSON (for reload comparisons). */
+export function plainTextLength(contentJson: unknown): number {
+  try {
+    const root = (contentJson as { root?: { children?: unknown[] } } | null)
+      ?.root;
+    if (!root?.children) return 0;
+    let len = 0;
+    const walk = (nodes: unknown[]) => {
+      for (const node of nodes) {
+        if (!node || typeof node !== "object") continue;
+        const n = node as { type?: string; text?: string; children?: unknown[] };
+        if (typeof n.text === "string") len += n.text.length;
+        if (Array.isArray(n.children)) walk(n.children);
+      }
+    };
+    walk(root.children);
+    return len;
+  } catch {
+    return 0;
+  }
+}

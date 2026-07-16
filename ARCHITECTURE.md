@@ -33,26 +33,27 @@
 
 ## Realtime choice
 
-### Primary: Yjs + Supabase Realtime (`NEXT_PUBLIC_COLLAB_MODE=yjs`)
+### Primary (default): soft sync (`NEXT_PUBLIC_COLLAB_MODE=soft`)
+
+`content_json` is the source of truth for save/reopen. See fallback section below — this is now the default because stale Yjs snapshots previously could reopen a document as only the first typed character.
+
+### Optional: Yjs + Supabase Realtime (`NEXT_PUBLIC_COLLAB_MODE=yjs`)
 
 - Client creates a Lexical `CollaborationPlugin` with a **provider factory** that wraps `SupabaseProvider` from `@supabase-labs/y-supabase` in an adapter matching Lexical’s `Provider` interface (`lib/collab/createSupabaseProvider.ts`).
-- Updates broadcast over Supabase Realtime channels; Yjs state persisted to `yjs_documents` (room/state).
-- Lexical JSON continues to autosave to `content_json` so documents remain readable without Yjs bootstrap.
+- Room key is the document UUID (must match PATCH cleanup). Legacy `doc:{id}` rows are deleted on save.
+- Updates broadcast over Supabase Realtime channels; Yjs rows in `yjs_documents` are **cleared whenever `content_json` is saved** so reopen bootstraps from the full Lexical JSON.
 - Presence avatars use Supabase Realtime **Presence** on `presence:doc:{id}` (works independently of Yjs).
 - Editors send updates; viewers receive them but `editable=false`.
 
-### Fallback: soft sync (`NEXT_PUBLIC_COLLAB_MODE=soft`)
+### Soft sync details (default)
 
-Use when Yjs + y-supabase is unstable in your project, or Realtime policies block the channel:
+- Debounced autosave writes **live** Lexical JSON from `editor.getEditorState()` (not a stale ref).
+- Saves use a **coalescing flush loop** + flush-on-home-navigation / `pagehide` keepalive.
+- Clients **broadcast** content on `soft:doc:{id}` for peer format/text sync; `postgres_changes` is a backup.
+- Echoes of our own saves are ignored; remote apply is timestamp-aware (`lib/sync-content.ts`).
+- Presence avatars use Realtime Presence.
 
-- Debounced autosave writes `content_json` (includes Lexical `format` bits for bold/italic/underline).
-- Saves use a **coalescing flush loop**: if the user types while a PATCH is in flight, the client keeps dirty and PATCHes again with the latest JSON (avoids “Saved” while the DB still has a 1-character snapshot).
-- Clients **broadcast** content envelopes on a Realtime channel (`soft:doc:{id}`) so format-only edits sync even when `postgres_changes` is not enabled.
-- `postgres_changes` on `documents` remains a backup path; echoes of our own saves are ignored via recent local fingerprints.
-- Remote apply uses `shouldApplyRemoteContent` (`lib/sync-content.ts`): newer remote wins unless local unsaved edits are newer — prevents dropping a peer’s bold mark.
-- Presence avatars still use Realtime Presence.
-
-Set `NEXT_PUBLIC_COLLAB_MODE=soft` in Vercel / `.env.local` to force the fallback. The editor UI shows a **live** vs **soft sync** badge.
+Set `NEXT_PUBLIC_COLLAB_MODE=yjs` only if you explicitly want CRDT live editing. The editor UI shows a **live** vs **soft sync** badge.
 
 Yjs builds alias a single `yjs` package in `next.config.ts` to avoid duplicate CRDT instances that break mark sync.
 

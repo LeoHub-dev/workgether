@@ -95,7 +95,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 AUTH_SECRET=your-long-random-secret
-NEXT_PUBLIC_COLLAB_MODE=yjs
+NEXT_PUBLIC_COLLAB_MODE=soft
 ```
 
 #### Option C: Plain Postgres only (SQL inspection)
@@ -174,7 +174,7 @@ In **Project → Settings → Environment Variables**, add (for Production / Pre
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase `anon` `public` key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase `service_role` `secret` key — [where to get it](#where-to-get-supabase-keys) |
 | `AUTH_SECRET` | Long random string (32+ chars) for signing cookies |
-| `NEXT_PUBLIC_COLLAB_MODE` | `yjs` (default) or `soft` |
+| `NEXT_PUBLIC_COLLAB_MODE` | `soft` (default, reliable save/reopen) or `yjs` (live CRDT) |
 
 Optional: `NEXT_PUBLIC_APP_URL` = your production URL (not required for core flows).
 

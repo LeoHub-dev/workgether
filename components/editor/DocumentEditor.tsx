@@ -7,7 +7,9 @@ import {
   useRef,
   useState,
   type MutableRefObject,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
+import { useRouter } from "next/navigation";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -180,6 +182,7 @@ export function DocumentEditor({
   canShare,
   attachments: initialAttachments,
 }: Props) {
+  const router = useRouter();
   const [title, setTitle] = useState(initialDoc.title);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -190,8 +193,20 @@ export function DocumentEditor({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const titleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextChange = useRef(false);
+  const needsFlushRef = useRef(false);
 
   const cursorColor = useMemo(() => colorForUsername(user.username), [user.username]);
+
+  /** Always read the live Lexical state at save time — never a stale ref alone. */
+  const readLiveContent = useCallback((): unknown => {
+    const editor = editorRef.current;
+    if (editor) {
+      const live = editor.getEditorState().toJSON();
+      latestJson.current = live;
+      return live;
+    }
+    return latestJson.current;
+  }, []);
 
   const initialConfig = useMemo(
     () => ({
@@ -258,22 +273,28 @@ export function DocumentEditor({
   }, [rememberLocalFingerprint]);
 
   /**
-   * Coalescing save loop: always PATCH the latest editor JSON, and if the user
+   * Coalescing save loop: always PATCH the *live* editor JSON, and if the user
    * typed while a request was in flight, flush again. Prevents "Saved" while
    * the DB still holds an older 1-character snapshot.
    */
-  const flushSave = useCallback(async () => {
-    if (!canEdit || saveInFlightRef.current) return;
+  const flushSave = useCallback(async (): Promise<boolean> => {
+    if (!canEdit) return false;
+    if (saveInFlightRef.current) {
+      needsFlushRef.current = true;
+      return false;
+    }
     saveInFlightRef.current = true;
+    needsFlushRef.current = false;
     setSaveState("saving");
     setSaveError(null);
+    let ok = false;
 
     try {
       // Loop until the persisted snapshot matches the live editor (and title).
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const saveId = ++latestSaveIdRef.current;
-        const contentSnapshot = latestJson.current;
+        const contentSnapshot = readLiveContent();
         const contentFp = contentFingerprint(contentSnapshot);
         const titleSnapshot = pendingTitleRef.current;
         const payload: { title?: string; content_json?: unknown } = {
@@ -289,15 +310,17 @@ export function DocumentEditor({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
+          keepalive: true,
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Save failed");
 
+        const liveAfter = readLiveContent();
         const completion = saveCompletionState({
           saveId,
           latestSaveId: latestSaveIdRef.current,
           savedFingerprint: contentFp,
-          currentFingerprint: contentFingerprint(latestJson.current),
+          currentFingerprint: contentFingerprint(liveAfter),
         });
 
         const saved = data.document as DocumentRow | undefined;
@@ -310,35 +333,36 @@ export function DocumentEditor({
           pendingTitleRef.current = null;
         }
 
-        if (!completion.isLatest) {
-          // A newer flush was requested; continue loop with fresher snapshots.
-          continue;
-        }
-
-        if (completion.stillDirty || pendingTitleRef.current != null) {
-          // User typed during the request — persist again with latest JSON.
+        if (!completion.isLatest || completion.stillDirty || pendingTitleRef.current != null) {
           continue;
         }
 
         lastFingerprintRef.current = contentFp;
         localDirtyRef.current = false;
         setSaveState("saved");
+        ok = true;
         break;
       }
     } catch (e) {
       setSaveState("error");
       setSaveError(e instanceof Error ? e.message : "Save failed");
+      ok = false;
     } finally {
       saveInFlightRef.current = false;
-      // If edits landed after the loop exited on error, schedule another try.
-      if (localDirtyRef.current || pendingTitleRef.current != null) {
+      if (
+        needsFlushRef.current ||
+        localDirtyRef.current ||
+        pendingTitleRef.current != null
+      ) {
+        needsFlushRef.current = false;
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => {
           void flushSave();
-        }, 400);
+        }, 50);
       }
     }
-  }, [canEdit, initialDoc.id, rememberLocalFingerprint]);
+    return ok;
+  }, [canEdit, initialDoc.id, readLiveContent, rememberLocalFingerprint]);
 
   const scheduleContentSave = useCallback(() => {
     if (!canEdit) return;
@@ -346,12 +370,11 @@ export function DocumentEditor({
     localEditAtRef.current = Date.now();
     lastFingerprintRef.current = contentFingerprint(latestJson.current);
     setSaveState("dirty");
-    // Fast broadcast of in-progress edits (incl. bold) before autosave lands.
     queueBroadcast(latestJson.current);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       void flushSave();
-    }, 1000);
+    }, 600);
   }, [canEdit, flushSave, queueBroadcast]);
 
   const scheduleTitleSave = useCallback(
@@ -363,7 +386,7 @@ export function DocumentEditor({
       if (titleTimer.current) clearTimeout(titleTimer.current);
       titleTimer.current = setTimeout(() => {
         void flushSave();
-      }, 800);
+      }, 600);
     },
     [canEdit, flushSave],
   );
@@ -371,11 +394,13 @@ export function DocumentEditor({
   const handleChange = useCallback(
     (editorState: EditorState, editor: LexicalEditor) => {
       editorRef.current = editor;
+      // Always keep latestJson aligned with the editor, even for programmatic
+      // applies — dropping this update caused saves of a stale 1-char snapshot.
+      latestJson.current = editorState.toJSON();
       if (skipNextChange.current) {
         skipNextChange.current = false;
         return;
       }
-      latestJson.current = editorState.toJSON();
       scheduleContentSave();
     },
     [scheduleContentSave],
@@ -396,6 +421,44 @@ export function DocumentEditor({
     localDirtyRef.current = true;
     void flushSave();
   }, [flushSave, title]);
+
+  const goHome = useCallback(
+    async (e: ReactMouseEvent<HTMLAnchorElement>) => {
+      e.preventDefault();
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (titleTimer.current) clearTimeout(titleTimer.current);
+      if (canEdit && (localDirtyRef.current || saveState === "dirty" || saveState === "saving")) {
+        await flushSave();
+      } else if (canEdit) {
+        // Final belt-and-suspenders write of whatever is on screen.
+        localDirtyRef.current = true;
+        await flushSave();
+      }
+      router.push("/home");
+    },
+    [canEdit, flushSave, router, saveState],
+  );
+
+  // Flush pending edits if the tab is closed / refreshed.
+  useEffect(() => {
+    const onHide = () => {
+      if (!canEdit) return;
+      if (!localDirtyRef.current && saveState !== "dirty") return;
+      const content = readLiveContent();
+      const body = JSON.stringify({
+        content_json: content,
+        title: pendingTitleRef.current ?? undefined,
+      });
+      void fetch(`/api/documents/${initialDoc.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      });
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, [canEdit, initialDoc.id, readLiveContent, saveState]);
 
   const providerFactory = useCallback(
     (id: string, yjsDocMap: Map<string, import("yjs").Doc>) =>
@@ -560,6 +623,7 @@ export function DocumentEditor({
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
           <Link
             href="/home"
+            onClick={goHome}
             className="font-serif text-lg font-semibold tracking-tight text-teal-900"
           >
             Workgether

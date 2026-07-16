@@ -76,6 +76,26 @@ export async function PATCH(request: Request, { params }: Params) {
       throw new ApiError(500, "Failed to save document");
     }
 
+    // content_json is the source of truth on reload. Clear Yjs snapshots so an
+    // older collaborative CRDT state (e.g. only the first character) cannot
+    // overwrite the full document when the editor is reopened.
+    if (body.content_json !== undefined) {
+      // Delete both current room key and legacy `doc:` prefixed rows.
+      const { error: yjsError } = await supabase
+        .from("yjs_documents")
+        .delete()
+        .in("room", [id, `doc:${id}`]);
+      if (yjsError) {
+        console.error("Failed to clear yjs_documents after save", yjsError);
+      }
+      if (data.yjs_state) {
+        await supabase
+          .from("documents")
+          .update({ yjs_state: null })
+          .eq("id", id);
+      }
+    }
+
     return jsonOk({ document: data });
   } catch (error) {
     return jsonError(error);

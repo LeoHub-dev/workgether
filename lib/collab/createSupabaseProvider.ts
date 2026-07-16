@@ -40,9 +40,10 @@ export function createSupabaseYjsProvider(
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Room id must match across clients. Keep throttle low so format-only
-  // updates (bold/italic) are not stuck behind a long merge window.
-  const supabaseProvider = new SupabaseProvider(`doc:${id}`, doc, supabase, {
+  // Room id MUST equal the Lexical document id (and PATCH cleanup key).
+  // A `doc:` prefix previously caused clears to miss rows, so reopen loaded a
+  // stale CRDT snapshot (often only the first character) instead of content_json.
+  const supabaseProvider = new SupabaseProvider(id, doc, supabase, {
     awareness: true,
     persistence: {
       table: "yjs_documents",
@@ -138,6 +139,9 @@ export function createSupabaseYjsProvider(
 
 export function getCollabMode(): "yjs" | "soft" {
   const mode = process.env.NEXT_PUBLIC_COLLAB_MODE;
+  // Default to soft sync — content_json is authoritative on reload and avoids
+  // stale Yjs snapshots truncating documents to the first typed character.
+  if (mode === "yjs") return "yjs";
   if (mode === "soft") return "soft";
   if (
     typeof window !== "undefined" &&
@@ -146,5 +150,5 @@ export function getCollabMode(): "yjs" | "soft" {
   ) {
     return "soft";
   }
-  return "yjs";
+  return "soft";
 }
