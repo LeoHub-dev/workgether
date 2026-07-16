@@ -45,11 +45,15 @@
 
 Use when Yjs + y-supabase is unstable in your project, or Realtime policies block the channel:
 
-- Debounced autosave writes `content_json`.
-- Clients subscribe to `postgres_changes` on `documents` for the open doc id and apply remote JSON when local state is not dirty.
+- Debounced autosave writes `content_json` (includes Lexical `format` bits for bold/italic/underline).
+- Clients **broadcast** content envelopes on a Realtime channel (`soft:doc:{id}`) so format-only edits sync even when `postgres_changes` is not enabled.
+- `postgres_changes` on `documents` remains a backup path.
+- Remote apply uses `shouldApplyRemoteContent` (`lib/sync-content.ts`): newer remote wins unless local unsaved edits are newer — prevents dropping a peer’s bold mark.
 - Presence avatars still use Realtime Presence.
 
 Set `NEXT_PUBLIC_COLLAB_MODE=soft` in Vercel / `.env.local` to force the fallback. The editor UI shows a **live** vs **soft sync** badge.
+
+Yjs builds alias a single `yjs` package in `next.config.ts` to avoid duplicate CRDT instances that break mark sync.
 
 ## File handling
 

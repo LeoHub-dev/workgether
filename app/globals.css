@@ -37,7 +37,21 @@ body {
   }
 }
 
-/* Lexical remote cursor placeholders */
+/* Lexical theme / format — keep explicit so Tailwind purge cannot hide synced marks */
 .LexicalTheme__paragraph {
   margin-bottom: 0.5rem;
+}
+
+.editor-text-bold,
+strong.editor-text-bold {
+  font-weight: 700;
+}
+
+.editor-text-italic,
+em.editor-text-italic {
+  font-style: italic;
+}
+
+.editor-text-underline {
+  text-decoration: underline;
 }

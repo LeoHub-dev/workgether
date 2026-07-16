@@ -44,6 +44,11 @@ import {
   serializeImportedContent,
   shouldConfirmReplace,
 } from "@/lib/import-content";
+import {
+  contentFingerprint,
+  shouldApplyRemoteContent,
+  toEpochMs,
+} from "@/lib/sync-content";
 
 type Props = {
   document: DocumentRow;
@@ -52,6 +57,13 @@ type Props = {
   canEdit: boolean;
   canShare: boolean;
   attachments: AttachmentRow[];
+};
+
+type ContentBroadcast = {
+  content_json: unknown;
+  updated_at: string;
+  sender_id: string;
+  rev: number;
 };
 
 function EditableGate({ canEdit }: { canEdit: boolean }) {
@@ -77,21 +89,43 @@ function EditorRefPlugin({
 
 function SoftSyncPlugin({
   documentId,
-  canEdit,
+  userId,
   onRemoteContent,
+  publishRef,
 }: {
   documentId: string;
-  canEdit: boolean;
-  onRemoteContent: (content: unknown) => void;
+  userId: string;
+  onRemoteContent: (payload: {
+    content_json: unknown;
+    updated_at: string;
+  }) => void;
+  publishRef: MutableRefObject<
+    ((content: unknown, updatedAt?: string) => void) | null
+  >;
 }) {
   useEffect(() => {
     if (getCollabMode() === "yjs") return;
     let channel: ReturnType<ReturnType<typeof getBrowserSupabase>["channel"]> | null =
       null;
+    let rev = 0;
     try {
       const supabase = getBrowserSupabase();
       channel = supabase
-        .channel(`soft:doc:${documentId}`)
+        .channel(`soft:doc:${documentId}`, {
+          config: { broadcast: { self: false } },
+        })
+        .on(
+          "broadcast",
+          { event: "content" },
+          ({ payload }) => {
+            const data = payload as ContentBroadcast;
+            if (!data?.content_json || data.sender_id === userId) return;
+            onRemoteContent({
+              content_json: data.content_json,
+              updated_at: data.updated_at,
+            });
+          },
+        )
         .on(
           "postgres_changes",
           {
@@ -103,19 +137,36 @@ function SoftSyncPlugin({
           (payload) => {
             const row = payload.new as DocumentRow;
             if (!row?.content_json) return;
-            onRemoteContent(row.content_json);
+            onRemoteContent({
+              content_json: row.content_json,
+              updated_at: row.updated_at,
+            });
           },
         )
         .subscribe();
+
+      publishRef.current = (content, updatedAt) => {
+        rev += 1;
+        void channel?.send({
+          type: "broadcast",
+          event: "content",
+          payload: {
+            content_json: content,
+            updated_at: updatedAt ?? new Date().toISOString(),
+            sender_id: userId,
+            rev,
+          } satisfies ContentBroadcast,
+        });
+      };
     } catch {
-      // Soft sync unavailable without Supabase
+      publishRef.current = null;
     }
     return () => {
+      publishRef.current = null;
       if (channel) void getBrowserSupabase().removeChannel(channel);
     };
-  }, [documentId, onRemoteContent]);
+  }, [documentId, onRemoteContent, publishRef, userId]);
 
-  void canEdit;
   return null;
 }
 
@@ -163,9 +214,9 @@ export function DocumentEditor({
           listitem: "mb-1",
         },
         text: {
-          bold: "font-bold",
-          italic: "italic",
-          underline: "underline",
+          bold: "editor-text-bold",
+          italic: "editor-text-italic",
+          underline: "editor-text-underline",
         },
       },
       nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode],
@@ -176,12 +227,35 @@ export function DocumentEditor({
     [canEdit, collabMode, initialDoc.content_json, initialDoc.id],
   );
 
+  const publishRef = useRef<((content: unknown, updatedAt?: string) => void) | null>(
+    null,
+  );
+  const broadcastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localDirtyRef = useRef(false);
+  const localEditAtRef = useRef(0);
+  const lastAppliedRemoteAtRef = useRef(toEpochMs(initialDoc.updated_at));
+  const lastFingerprintRef = useRef(contentFingerprint(initialDoc.content_json));
+
+  const queueBroadcast = useCallback((content: unknown, updatedAt?: string) => {
+    if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
+    broadcastTimer.current = setTimeout(() => {
+      publishRef.current?.(content, updatedAt);
+    }, 120);
+  }, []);
+
   const persist = useCallback(
     async (payload: { title?: string; content_json?: unknown }) => {
       if (!canEdit) return;
       setSaveState("saving");
       setSaveError(null);
       try {
+        // Broadcast immediately so peers see format (bold/italic) without
+        // waiting for Postgres realtime publication.
+        if (payload.content_json !== undefined) {
+          if (broadcastTimer.current) clearTimeout(broadcastTimer.current);
+          publishRef.current?.(payload.content_json);
+        }
+
         const res = await fetch(`/api/documents/${initialDoc.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -189,6 +263,15 @@ export function DocumentEditor({
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Save failed");
+        const saved = data.document as DocumentRow | undefined;
+        if (saved?.updated_at) {
+          lastAppliedRemoteAtRef.current = toEpochMs(saved.updated_at);
+          if (payload.content_json !== undefined) {
+            publishRef.current?.(payload.content_json, saved.updated_at);
+            lastFingerprintRef.current = contentFingerprint(payload.content_json);
+          }
+        }
+        localDirtyRef.current = false;
         setSaveState("saved");
       } catch (e) {
         setSaveState("error");
@@ -200,12 +283,17 @@ export function DocumentEditor({
 
   const scheduleContentSave = useCallback(() => {
     if (!canEdit) return;
+    localDirtyRef.current = true;
+    localEditAtRef.current = Date.now();
+    lastFingerprintRef.current = contentFingerprint(latestJson.current);
     setSaveState("dirty");
+    // Fast broadcast of in-progress edits (incl. bold) before autosave lands.
+    queueBroadcast(latestJson.current);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       void persist({ content_json: latestJson.current });
-    }, 1500);
-  }, [canEdit, persist]);
+    }, 800);
+  }, [canEdit, persist, queueBroadcast]);
 
   const scheduleTitleSave = useCallback(
     (nextTitle: string) => {
@@ -283,11 +371,14 @@ export function DocumentEditor({
 
       const serialized = serializeImportedContent(data.content_json);
       latestJson.current = data.content_json;
+      lastFingerprintRef.current = contentFingerprint(data.content_json);
+      localDirtyRef.current = false;
       skipNextChange.current = true;
 
       // Apply imported Lexical JSON into the live editor (works for soft sync;
       // for Yjs, setEditorState updates the bound doc and we cleared server Yjs state).
       editor.setEditorState(editor.parseEditorState(serialized));
+      publishRef.current?.(data.content_json);
       setSaveState("saved");
       setSaveError(null);
     },
@@ -295,16 +386,30 @@ export function DocumentEditor({
   );
 
   const onRemoteContent = useCallback(
-    (content: unknown) => {
+    (payload: { content_json: unknown; updated_at: string }) => {
       const editor = editorRef.current;
       if (!editor) return;
-      // Only apply if local not dirty
-      if (saveState === "dirty" || saveState === "saving") return;
+
+      const fingerprint = contentFingerprint(payload.content_json);
+      if (fingerprint === lastFingerprintRef.current) return;
+
+      const apply = shouldApplyRemoteContent({
+        remoteUpdatedAt: payload.updated_at,
+        lastAppliedRemoteAt: lastAppliedRemoteAtRef.current,
+        localDirty: localDirtyRef.current,
+        localEditAt: localEditAtRef.current,
+      });
+      if (!apply) return;
+
       skipNextChange.current = true;
-      latestJson.current = content;
-      editor.setEditorState(editor.parseEditorState(JSON.stringify(content)));
+      latestJson.current = payload.content_json;
+      lastFingerprintRef.current = fingerprint;
+      lastAppliedRemoteAtRef.current = toEpochMs(payload.updated_at);
+      editor.setEditorState(
+        editor.parseEditorState(JSON.stringify(payload.content_json)),
+      );
     },
-    [saveState],
+    [],
   );
 
   const editorBody = (
@@ -358,8 +463,9 @@ export function DocumentEditor({
         <EditableGate canEdit={canEdit} />
         <SoftSyncPlugin
           documentId={initialDoc.id}
-          canEdit={canEdit}
+          userId={user.id}
           onRemoteContent={onRemoteContent}
+          publishRef={publishRef}
         />
       </div>
     </>
